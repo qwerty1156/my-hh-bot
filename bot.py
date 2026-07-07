@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
+from dotenv import load_dotenv
 
+load_dotenv()
 import json
 import logging
 import os
@@ -334,6 +336,12 @@ def send_long_message(
 )
 def send_welcome(message):
 
+    print(
+    f"ID: {message.from_user.id} | "
+    f"Username: @{message.from_user.username} | "
+    f"Имя: {message.from_user.first_name}"
+)
+
     user_id = str(
         message.from_user.id
     )
@@ -495,6 +503,57 @@ def handle_vacancy(message):
 # =======================================================
 
 def start_bot():
+
+        # Укажи здесь свой Telegram ID
+ADMIN_ID = 6882795498
+
+@bot.message_handler(commands=['grant'])
+def grant_attempts(message):
+    # Проверка прав администратора
+    if message.from_user.id != ADMIN_ID:
+        bot.reply_to(message, "❌ У вас нет прав.")
+        return
+
+    try:
+        parts = message.text.split()
+
+        # Проверяем формат команды
+        if len(parts) != 3:
+            bot.reply_to(message, "❌ Использование: /grant ID_ПОЛЬЗОВАТЕЛЯ КОЛИЧЕСТВО")
+            return
+
+        target_uid = parts[1]
+
+        try:
+            count = int(parts[2])
+        except ValueError:
+            bot.reply_to(message, "❌ Количество должно быть числом.")
+            return
+
+        if count <= 0:
+            bot.reply_to(message, "❌ Количество должно быть больше нуля.")
+            return
+
+        lim = load_limits()
+        lim[target_uid] = lim.get(target_uid, 0) + count
+        save_limits(lim)
+
+        bot.reply_to(
+            message,
+            f"✅ Успешно! Пользователю {target_uid} добавлено {count} попыток."
+        )
+
+        # Пытаемся уведомить пользователя
+        try:
+            bot.send_message(
+                target_uid,
+                f"🎉 Баланс успешно пополнен! Вам добавлено {count} попыток. Удачи в поиске работы!"
+            )
+        except Exception as e:
+            print(f"Не удалось отправить сообщение пользователю {target_uid}: {e}")
+
+    except Exception as e:
+        bot.reply_to(message, f"❌ Ошибка: {e}")
 
     while True:
 
