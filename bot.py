@@ -469,16 +469,18 @@ def handle_vacancy(message):
             )
         )
 
-        final_text = (
-            f"{result}\n\n"
-            f"📊 Осталось попыток: "
-            f"<b>{new_remaining}</b>"
-        )
+        # Отправляем письмо
+send_long_message(
+    message.chat.id,
+    result
+)
 
-        send_long_message(
-            message.chat.id,
-            final_text
-        )
+# Отправляем количество попыток отдельным сообщением
+bot.send_message(
+    message.chat.id,
+    f"📊 Осталось попыток: <b>{new_remaining}</b>",
+    parse_mode="HTML"
+)
 
         logger.info(
             f"SUCCESS | {user_id}"
