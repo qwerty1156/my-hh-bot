@@ -336,7 +336,7 @@ def send_long_message(
 )
 def send_welcome(message):
 
-    print(
+print(
     f"ID: {message.from_user.id} | "
     f"Username: @{message.from_user.username} | "
     f"Имя: {message.from_user.first_name}"
@@ -470,17 +470,17 @@ def handle_vacancy(message):
         )
 
         # Отправляем письмо
-send_long_message(
-    message.chat.id,
-    result
-)
+        send_long_message(
+            message.chat.id,
+            result
+        )
 
-# Отправляем количество попыток отдельным сообщением
-bot.send_message(
-    message.chat.id,
-    f"📊 Осталось попыток: <b>{new_remaining}</b>",
-    parse_mode="HTML"
-)
+        # Отправляем количество попыток отдельным сообщением
+        bot.send_message(
+            message.chat.id,
+            f"📊 Осталось попыток: <b>{new_remaining}</b>",
+            parse_mode="HTML"
+        )
 
         logger.info(
             f"SUCCESS | {user_id}"
@@ -503,14 +503,11 @@ bot.send_message(
         except Exception:
             pass
 # =======================================================
-
-def start_bot():
-
-        # Укажи здесь свой Telegram ID
 ADMIN_ID = 6882795498
 
 @bot.message_handler(commands=['grant'])
 def grant_attempts(message):
+
     # Проверка прав администратора
     if message.from_user.id != ADMIN_ID:
         bot.reply_to(message, "❌ У вас нет прав.")
@@ -524,7 +521,7 @@ def grant_attempts(message):
             bot.reply_to(message, "❌ Использование: /grant ID_ПОЛЬЗОВАТЕЛЯ КОЛИЧЕСТВО")
             return
 
-        target_uid = parts[1]
+        target_uid = str(parts[1])
 
         try:
             count = int(parts[2])
@@ -554,9 +551,11 @@ def grant_attempts(message):
         except Exception as e:
             print(f"Не удалось отправить сообщение пользователю {target_uid}: {e}")
 
-    except Exception as e:
-        bot.reply_to(message, f"❌ Ошибка: {e}")
+except Exception as e:
+    bot.reply_to(message, f"❌ Ошибка: {e}")
 
+
+def start_bot():
     while True:
 
         try:
