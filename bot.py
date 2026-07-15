@@ -202,6 +202,11 @@ class GeminiClient:
 
 # =======================================================
 
+if not BOT_TOKEN:
+    logger.warning("BOT_TOKEN не установлен. Telegram-бот не сможет запуститься.")
+if not GEMINI_API_KEY:
+    logger.warning("GEMINI_API_KEY не установлен. Генерация контента не будет работать.")
+
 bot = telebot.TeleBot(BOT_TOKEN)
 
 ai_client = GeminiClient(GEMINI_API_KEY)
@@ -250,6 +255,8 @@ def save_limits(data: Dict[str, int]):
                 ensure_ascii=False,
                 indent=4
             )
+
+
 def get_user_limits(user_id: str) -> int:
 
     limits = load_limits()
@@ -305,7 +312,11 @@ def split_message(
             text[:split_pos]
         )
 
-        text = text[split_pos:]
+        # Remove the part we appended. If we split at a newline, skip that newline to avoid leading newline.
+        if split_pos < len(text) and text[split_pos] == "\n":
+            text = text[split_pos + 1:]
+        else:
+            text = text[split_pos:]
 
     if text:
         parts.append(text)
@@ -336,11 +347,11 @@ def send_long_message(
 )
 def send_welcome(message):
 
-print(
-    f"ID: {message.from_user.id} | "
-    f"Username: @{message.from_user.username} | "
-    f"Имя: {message.from_user.first_name}"
-)
+    print(
+        f"ID: {message.from_user.id} | "
+        f"Username: @{message.from_user.username} | "
+        f"Имя: {message.from_user.first_name}"
+    )
 
     user_id = str(
         message.from_user.id
@@ -545,14 +556,14 @@ def grant_attempts(message):
         # Пытаемся уведомить пользователя
         try:
             bot.send_message(
-                target_uid,
+                int(target_uid),
                 f"🎉 Баланс успешно пополнен! Вам добавлено {count} попыток. Удачи в поиске работы!"
             )
         except Exception as e:
             print(f"Не удалось отправить сообщение пользователю {target_uid}: {e}")
 
-except Exception as e:
-    bot.reply_to(message, f"❌ Ошибка: {e}")
+    except Exception as e:
+        bot.reply_to(message, f"❌ Ошибка: {e}")
 
 
 def start_bot():
