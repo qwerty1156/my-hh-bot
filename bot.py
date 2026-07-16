@@ -130,6 +130,10 @@ class GeminiClient:
         prompt: str
     ) -> Optional[str]:
 
+        if not self.api_key:
+            logger.error("GEMINI_API_KEY не задан. Пропускаем генерацию.")
+            return None
+
         payload = {
             "contents": [
                 {
@@ -148,6 +152,8 @@ class GeminiClient:
             }
         }
 
+        response = None
+
         try:
 
             response = self.session.post(
@@ -164,44 +170,65 @@ class GeminiClient:
 
             data = response.json()
 
-            candidates = data.get("candidates")
+            # Попробуем несколько вариантов извлечения текста, чтобы быть устойчивыми к формату ответа
+            text = None
 
-            if not candidates:
-                logger.warning("Gemini вернул пустой ответ.")
+            # Вариант: candidates -> content -> parts -> text
+            candidates = data.get("candidates") or []
+            if candidates:
+                first = candidates[0]
+                content = first.get("content") or {}
+                parts = content.get("parts") or []
+                if parts and isinstance(parts, list) and isinstance(parts[0], dict):
+                    text = parts[0].get("text")
+
+            # Вариант: outputs/outputs[0]/content
+            if not text:
+                outputs = data.get("outputs") or data.get("output") or []
+                if outputs:
+                    first_out = outputs[0]
+                    if isinstance(first_out, dict):
+                        # content может быть списком с объектами, содержащими text
+                        cont = first_out.get("content")
+                        if isinstance(cont, list) and cont:
+                            maybe = cont[0]
+                            if isinstance(maybe, dict):
+                                text = maybe.get("text") or maybe.get("text_generation")
+                        elif isinstance(cont, str):
+                            text = cont
+                        else:
+                            # Прямое поле text
+                            text = first_out.get("text")
+
+            if not text:
+                logger.warning("Не удалось извлечь текст из ответа Gemini: %s", data)
                 return None
 
-            content = (
-                candidates[0]
-                .get("content", {})
-                .get("parts", [])
-            )
-
-            if not content:
-                return None
-
-            return content[0].get("text")
+            return text
 
         except requests.exceptions.Timeout:
 
             logger.error("Таймаут Gemini")
+            return None
 
         except requests.exceptions.HTTPError as e:
             logger.error(f"HTTP ошибка: {e}")
-
-            if e.response is not None:
-                logger.error(f"Ответ Gemini: {e.response.text}")
-    except Exception:
-        pass
+            try:
+                if response is not None:
+                    logger.error(f"Ответ Gemini: {response.text}")
+            except Exception:
+                pass
+            return None
 
         except requests.exceptions.RequestException as e:
 
             logger.error(f"Ошибка сети: {e}")
+            return None
 
         except Exception as e:
 
             logger.exception(e)
-
-        return None
+            return None
 
 
 # =======================================================
