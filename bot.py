@@ -185,11 +185,11 @@ class GeminiClient:
 
             logger.error("Таймаут Gemini")
 
-except requests.exceptions.HTTPError as e:
-    logger.error(f"HTTP ошибка: {e}")
+        except requests.exceptions.HTTPError as e:
+            logger.error(f"HTTP ошибка: {e}")
 
-    try:
-        logger.error(f"Ответ Gemini: {response.text}")
+            if e.response is not None:
+                logger.error(f"Ответ Gemini: {e.response.text}")
     except Exception:
         pass
 
