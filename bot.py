@@ -40,7 +40,22 @@ logger = logging.getLogger("CoverLetterBot")
 
 # =======================================================
 
+app = Flask(__name__)
 
+lock = Lock()
+
+
+@app.route("/")
+def home():
+    return "Bot is running!"
+
+
+def run_web_server():
+    port = int(os.environ.get("PORT", 8080))
+    app.run(
+        host="0.0.0.0",
+        port=port
+    )
 
 # =======================================================
 
@@ -624,7 +639,13 @@ if __name__ == "__main__":
         "Запуск веб-сервера..."
     )
 
-    
+    web_thread = Thread(
+        target=run_web_server,
+        daemon=True
+    )
+
+    web_thread.start()
+
     logger.info(
         "Веб-сервер успешно запущен."
     )
