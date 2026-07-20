@@ -352,6 +352,21 @@ def split_message(
     return parts
 
 
+def clean_markdown(text: str) -> str:
+    """Удаляет Markdown-символы из текста"""
+    # Удаляем ** (жирный)
+    text = text.replace("**", "")
+    # Удаляем * (курсив)
+    text = text.replace("*", "")
+    # Удаляем __ (жирный)
+    text = text.replace("__", "")
+    # Удаляем _ (курсив)
+    text = text.replace("_", "")
+    # Удаляем ## и другие заголовки
+    text = text.replace("##", "").replace("#", "")
+    return text
+
+
 def send_long_message(
     chat_id: int,
     text: str
@@ -497,6 +512,8 @@ def handle_vacancy(message):
             )
 
             return
+
+        result = clean_markdown(result)
 
         decrease_user_limits(
             user_id
