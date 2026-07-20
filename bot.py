@@ -343,11 +343,8 @@ def split_message(
             text[:split_pos]
         )
 
-        # Remove the part we appended. If we split at a newline, skip that newline to avoid leading newline.
-        if split_pos < len(text) and text[split_pos] == "\n":
-            text = text[split_pos + 1:]
-        else:
-            text = text[split_pos:]
+        # Удаляем уже добавленную часть и пропускаем переносы строк
+        text = text[split_pos:].lstrip("\n")
 
     if text:
         parts.append(text)
@@ -488,13 +485,13 @@ def handle_vacancy(message):
         except Exception:
             pass
 
-        if not result:
+        if not result or len(result.strip()) < 50:
 
             bot.reply_to(
                 message,
                 (
                     "❌ Не удалось получить "
-                    "ответ от Gemini.\n"
+                    "полный ответ от Gemini.\n"
                     "Попробуйте позже."
                 )
             )
