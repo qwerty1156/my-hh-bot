@@ -6,12 +6,12 @@ import json
 import logging
 import os
 import time
-from threading import Lock, Thread
+from threading import Lock
 from typing import Dict, Optional
 
 import requests
 import telebot
-from flask import Flask
+from flask import Flask, request
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -28,6 +28,10 @@ USERS_FILE = "users_limits.json"
 MODEL_NAME = "gemini-2.5-flash"
 
 REQUEST_TIMEOUT = (5, 60)
+
+# Webhook configuration
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}" if BOT_TOKEN else "/webhook/unknown"
 
 # =======================================================
 
@@ -50,11 +54,57 @@ def home():
     return "Bot is running!"
 
 
+def set_webhook():
+    """Удалить старый webhook и установить новый"""
+    try:
+        # Сначала удаляем любой существующий webhook
+        logger.info("Удаление старого webhook...")
+        bot.delete_webhook()
+        time.sleep(1)
+        
+        if not WEBHOOK_URL:
+            logger.warning(
+                "WEBHOOK_URL не установлен. "
+                "Webhook не будет работать."
+            )
+            return False
+        
+        # Затем устанавливаем новый
+        logger.info(f"Установка webhook: {WEBHOOK_URL}{WEBHOOK_PATH}")
+        bot.set_webhook(
+            url=f"{WEBHOOK_URL}{WEBHOOK_PATH}"
+        )
+        logger.info("✅ Webhook успешно установлен")
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка при установке webhook: {e}")
+        return False
+
+
+@app.route(WEBHOOK_PATH, methods=["POST"])
+def webhook():
+    """Обработчик webhook от Telegram"""
+    if request.headers.get("content-type") == "application/json":
+        json_data = request.get_json()
+        try:
+            update = telebot.types.Update.de_json(json_data)
+            bot.process_new_updates([update])
+            logger.info(f"✅ Обновление обработано: {update.update_id}")
+        except Exception as e:
+            logger.error(f"❌ Ошибка обработки webhook: {e}")
+    return "OK", 200
+
+
 def run_web_server():
+    """Запуск Flask веб-сервера"""
     port = int(os.environ.get("PORT", 8080))
+    logger.info(f"🚀 Запуск Flask на порту {port}...")
     app.run(
         host="0.0.0.0",
-        port=port
+        port=port,
+        debug=False,
+        use_reloader=False
     )
 
 # =======================================================
@@ -611,57 +661,33 @@ def grant_attempts(message):
         bot.reply_to(message, f"❌ Ошибка: {e}")
 
 
-def start_bot():
-    while True:
-
-        try:
-
-            logger.info(
-                "Запуск Telegram-бота..."
-            )
-
-            bot.infinity_polling(
-                timeout=30,
-                long_polling_timeout=30,
-                skip_pending=True
-            )
-
-        except KeyboardInterrupt:
-
-            logger.info(
-                "Бот остановлен."
-            )
-
-            break
-
-        except Exception as e:
-
-            logger.exception(e)
-
-            logger.info(
-                "Перезапуск через 5 секунд..."
-            )
-
-            time.sleep(5)
-
-
 # =======================================================
 
 if __name__ == "__main__":
-
-    logger.info(
-        "Запуск веб-сервера..."
-    )
-
-    web_thread = Thread(
-        target=run_web_server,
-        daemon=True
-    )
-
-    web_thread.start()
-
-    logger.info(
-        "Веб-сервер успешно запущен."
-    )
-
-    start_bot()
+    
+    logger.info("=" * 50)
+    logger.info("🤖 Запуск Telegram-бота в webhook-режиме...")
+    logger.info("=" * 50)
+    
+    # Проверяем обязательные переменные окружения
+    if not BOT_TOKEN:
+        logger.error("❌ BOT_TOKEN не установлен!")
+        exit(1)
+    
+    if not WEBHOOK_URL:
+        logger.error("❌ WEBHOOK_URL не установлен!")
+        logger.error("Пример для Render: https://my-app.onrender.com")
+        exit(1)
+    
+    if not GEMINI_API_KEY:
+        logger.warning("⚠️  GEMINI_API_KEY не установлен. Генерация контента не будет работать.")
+    
+    # Устанавливаем webhook перед запуском сервера
+    if set_webhook():
+        logger.info("✅ Инициализация успешна. Запуск веб-сервера...")
+    else:
+        logger.error("❌ Не удалось установить webhook. Проверьте WEBHOOK_URL и BOT_TOKEN.")
+        exit(1)
+    
+    # Запускаем Flask
+    run_web_server()
