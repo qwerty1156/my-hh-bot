@@ -198,7 +198,7 @@ class GeminiClient:
                 "temperature": 0.7,
                 "topP": 0.95,
                 "topK": 40,
-                "maxOutputTokens": 2048
+                "maxOutputTokens": 4096
             }
         }
 
@@ -556,8 +556,22 @@ def handle_vacancy(message):
         except Exception:
             pass
 
-        if not result or len(result.strip()) < 50:
+        if not result:
+            bot.reply_to(
+                message,
+                (
+                    "❌ Не удалось получить "
+                    "ответ от Gemini.\n"
+                    "Попробуйте позже."
+                )
+            )
+            return
 
+        cleaned_result = clean_markdown(result).strip()
+
+        # Проверка: письмо должно быть содержательным (минимум 100 символов)
+        if len(cleaned_result) < 100:
+            logger.warning(f"Письмо слишком короткое ({len(cleaned_result)} символов): {cleaned_result[:50]}")
             bot.reply_to(
                 message,
                 (
@@ -566,10 +580,7 @@ def handle_vacancy(message):
                     "Попробуйте позже."
                 )
             )
-
             return
-
-        result = clean_markdown(result)
 
         decrease_user_limits(
             user_id
@@ -584,7 +595,7 @@ def handle_vacancy(message):
         # Отправляем письмо
         send_long_message(
             message.chat.id,
-            result
+            cleaned_result
         )
 
         # Отправляем количество попыток отдельным сообщением
