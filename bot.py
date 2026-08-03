@@ -26,7 +26,7 @@ ADMIN_ID = int(os.getenv("ADMIN_ID") or "6882795498")  # целое число
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME")
 KASPI_PHONE = os.getenv("KASPI_PHONE") or "+7XXXXXXXXXX"
 KASPI_NAME = os.getenv("KASPI_NAME") or "ИП Пример"
-PROVIDER_TOKEN = os.getenv("PROVIDER_TOKEN") or "PROVIDER_TOKEN_FROM_BOTFATHER"  # для Telegram Payments (Stars)
+PROVIDER_TOKEN = ""  # для Telegram Payments (Stars)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # Прочие настройки
