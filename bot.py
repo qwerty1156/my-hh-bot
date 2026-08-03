@@ -10,6 +10,7 @@ from threading import Lock
 from typing import Dict, Optional
 from datetime import datetime, timedelta
 import uuid
+import traceback
 
 import requests
 import telebot
@@ -26,7 +27,7 @@ ADMIN_ID = int(os.getenv("ADMIN_ID") or "6882795498")  # целое число
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME")
 KASPI_PHONE = os.getenv("KASPI_PHONE") or "+7XXXXXXXXXX"
 KASPI_NAME = os.getenv("KASPI_NAME") or "ИП Пример"
-PROVIDER_TOKEN = ""  # для Telegram Payments (Stars)
+PROVIDER_TOKEN = os.getenv("PROVIDER_TOKEN") or ""  # для Telegram Payments (Stars)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # Прочие настройки
@@ -89,20 +90,41 @@ def set_webhook():
         
     except Exception as e:
         logger.error(f"❌ Ошибка при установке webhook: {e}")
+        logger.error(traceback.format_exc())
         return False
 
 
 @app.route(WEBHOOK_PATH, methods=["POST"])
 def webhook():
     """Обработчик webhook от Telegram"""
-    if request.headers.get("content-type") == "application/json":
-        json_data = request.get_json()
+    content_type = request.headers.get("content-type", "")
+    if not content_type.lower().startswith("application/json"):
+        logger.warning(f"Пропущен webhook: неподходящий Content-Type: {content_type}")
+        return "Unsupported Media Type", 415
+
+    try:
+        json_data = request.get_json(force=True)
+        logger.info("Webhook: получено обновление")
+        # логируем кратко, не dump всю нагрузку на лог
+        try:
+            uid = None
+            if isinstance(json_data, dict):
+                # пытаемся получить идентификатор
+                uid = json_data.get("update_id")
+            logger.debug(f"Webhook update_id={uid}")
+        except Exception:
+            pass
+
         try:
             update = telebot.types.Update.de_json(json_data)
             bot.process_new_updates([update])
-            logger.info(f"✅ Обновление обработано: {update.update_id}")
+            logger.info(f"✅ Обновление обработано: {getattr(update, 'update_id', 'unknown')}")
         except Exception as e:
-            logger.error(f"❌ Ошибка обработки webhook: {e}")
+            logger.error(f"❌ Ошибка обработки update в bot.process_new_updates: {e}")
+            logger.error(traceback.format_exc())
+    except Exception as e:
+        logger.error(f"❌ Ошибка парсинга webhook payload: {e}")
+        logger.error(traceback.format_exc())
     return "OK", 200
 
 
@@ -313,6 +335,7 @@ def load_json_file(path: str) -> dict:
             with open(path, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception:
+            logger.error(f"Ошибка загрузки JSON из {path}: {traceback.format_exc()}")
             return {}
 
 
@@ -395,7 +418,7 @@ def load_limits() -> Dict[str, int]:
                 }
 
         except Exception:
-
+            logger.error(f"Ошибка load_limits: {traceback.format_exc()}")
             return {}
 
 
@@ -587,11 +610,13 @@ KASPI_WAITING = {}
 
 
 def make_tariffs_keyboard():
-    keyboard = teletypes.InlineKeyboardMarkup()
+    """
+    Создаём одну InlineKeyboardMarkup и добавляем в неё кнопки.
+    Ранее была ошибка: создавались вложенные InlineKeyboardMarkup и они добавлялись в родительский,
+    что приводило к некорректной сериализации и отсутствию callback_data.
+    """
+    keyboard = teletypes.InlineKeyboardMarkup(row_width=2)
     for key, t in TARIFFS.items():
-        text_line = f"{t['title']} — {t['price_tenge']} ₸"
-        # Две кнопки на тариф: Kaspi и Stars
-        kb = teletypes.InlineKeyboardMarkup(row_width=2)
         btn_kaspi = teletypes.InlineKeyboardButton(
             f"💳 Kaspi ({t['price_tenge']}₸)",
             callback_data=f"kaspi:{key}"
@@ -600,8 +625,7 @@ def make_tariffs_keyboard():
             f"⭐️ Stars ({t['stars']} XTR)",
             callback_data=f"stars:{key}"
         )
-        kb.add(btn_kaspi, btn_stars)
-        keyboard.add(kb)
+        keyboard.add(btn_kaspi, btn_stars)
     return keyboard
 
 
@@ -617,71 +641,104 @@ def cmd_buy(message):
         else:
             desc = f"<b>{t['title']}</b>\n💬 {t.get('replies')} откликов\n💰 {t['price_tenge']} ₸ | ⭐️ {t['stars']} XTR\n"
         text_lines.append(desc)
-    bot.send_message(message.chat.id, "\n".join(text_lines), reply_markup=make_tariffs_keyboard(), parse_mode="HTML")
+    try:
+        kb = make_tariffs_keyboard()
+        bot.send_message(message.chat.id, "\n".join(text_lines), reply_markup=kb, parse_mode="HTML")
+    except Exception as e:
+        logger.error("Ошибка отправки списка тарифов: %s", e)
+        logger.error(traceback.format_exc())
+        bot.reply_to(message, "❌ Ошибка при формировании клавиатуры. Попробуйте позже.")
 
 
 @bot.callback_query_handler(func=lambda call: call.data and (call.data.startswith("kaspi:") or call.data.startswith("stars:")))
 def callback_payment_choice(call: teletypes.CallbackQuery):
-    data = call.data  # e.g., "kaspi:start" или "stars:benefit"
-    method, tariff_key = data.split(":", 1)
-    user_id = str(call.from_user.id)
+    """
+    Обработчик, который вызывается при нажатии кнопок Kaspi/Stars.
+    Добавлено подробное логирование входа, данных call и ошибок.
+    """
+    logger.info(f"callback_payment_choice: вход. from_user.id={getattr(call.from_user, 'id', 'unknown')}, data={getattr(call, 'data', 'None')}")
+    try:
+        data = call.data  # e.g., "kaspi:start" или "stars:benefit"
+        method, tariff_key = data.split(":", 1)
+        user_id = str(call.from_user.id)
 
-    if tariff_key not in TARIFFS:
-        bot.answer_callback_query(call.id, "Неизвестный тариф.", show_alert=True)
-        return
+        if tariff_key not in TARIFFS:
+            logger.warning(f"Неизвестный тариф в callback: {tariff_key}")
+            bot.answer_callback_query(call.id, "Неизвестный тариф.", show_alert=True)
+            return
 
-    if method == "kaspi":
-        # Создаём заявку и отправляем инструкцию пользователю
-        req_id = create_payment_record(user_id, tariff_key, "kaspi")
-        t = TARIFFS[tariff_key]
-        msg = (
-            f"Переведите <b>{t['price_tenge']} ₸</b> на номер <b>{KASPI_PHONE}</b>\n\n"
-            f"Получатель: <b>{KASPI_NAME}</b>\n\n"
-            "После перевода нажмите кнопку ниже и отправьте фото чека."
-        )
-        kb = teletypes.InlineKeyboardMarkup()
-        kb.add(teletypes.InlineKeyboardButton("🧾 Я оплатил (Отправить чек)", callback_data=f"kaspi_paid:{req_id}"))
-        bot.answer_callback_query(call.id)
-        bot.send_message(call.message.chat.id, msg, reply_markup=kb, parse_mode="HTML")
-        return
-
-    if method == "stars":
-        # Создадим invoice через Telegram Payments
-        t = TARIFFS[tariff_key]
-        title = t["title"]
-        description = f"{t['title']} — {t.get('replies') or 'Безлимит'}"
-        # payload: используем уникальную строку, чтобы потом распознать
-        payload = f"stars|{user_id}|{tariff_key}|{str(uuid.uuid4())}"
-        # Цены: currency XTR, amount в "минимальных единицах" (целое).
-        # Интерпретируем "stars" как сумма в XTR (в минимальных единицах умножаем на 100).
-        amount = int(t["stars"]) * 100
-        prices = [teletypes.LabeledPrice(label=f"{title}", amount=amount)]
-
-        try:
-            # Создаем запись платежа, чтобы отследить позже
-            payments = load_payments()
-            req_id = create_payment_record(user_id, tariff_key, "stars")
-            # Сохраняем связь payload -> req_id
-            payments = load_payments()
-            payments_key = f"payload:{payload}"
-            payments[payments_key] = {"req_id": req_id}
-            save_payments(payments)
-
-            bot.send_invoice(
-                chat_id=call.message.chat.id,
-                title=title,
-                description=description,
-                invoice_payload=payload,
-                provider_token=PROVIDER_TOKEN,
-                currency="XTR",
-                prices=prices,
-                start_parameter=f"start-{req_id}"
+        if method == "kaspi":
+            # Создаём заявку и отправляем инструкцию пользователю
+            req_id = create_payment_record(user_id, tariff_key, "kaspi")
+            t = TARIFFS[tariff_key]
+            msg = (
+                f"Переведите <b>{t['price_tenge']} ₸</b> на номер <b>{KASPI_PHONE}</b>\n\n"
+                f"Получатель: <b>{KASPI_NAME}</b>\n\n"
+                "После перевода нажмите кнопку ниже и отправьте фото чека."
             )
-            bot.answer_callback_query(call.id)
-        except Exception as e:
-            bot.answer_callback_query(call.id, "Ошибка создания инвойса. Попробуйте позже.", show_alert=True)
-            logger.exception(e)
-        return
+            kb = teletypes.InlineKeyboardMarkup()
+            kb.add(teletypes.InlineKeyboardButton("🧾 Я оплатил (Отправить чек)", callback_data=f"kaspi_paid:{req_id}"))
+            try:
+                bot.answer_callback_query(call.id)
+                bot.send_message(call.message.chat.id, msg, reply_markup=kb, parse_mode="HTML")
+                logger.info(f"kaspi: отправлена инструкция пользователю {user_id}, req_id={req_id}")
+            except Exception as e:
+                logger.error(f"Ошибка при отправке инструкции Kaspi пользователю: {e}")
+                logger.error(traceback.format_exc())
+                try:
+                    bot.answer_callback_query(call.id, "Ошибка отправки инструкции. Попробуйте позже.", show_alert=True)
+                except Exception:
+                    logger.error("Не удалось послать answer_callback_query для kaspi-ошибки")
+            return
+
+        if method == "stars":
+            # Создадим invoice через Telegram Payments
+            t = TARIFFS[tariff_key]
+            title = t["title"]
+            description = f"{t['title']} — {t.get('replies') or 'Безлимит'}"
+            # payload: используем уникальную строку, чтобы потом распознать
+            payload = f"stars|{user_id}|{tariff_key}|{str(uuid.uuid4())}"
+            # Цены: currency XTR, amount в "минимальных единицах" (целое).
+            # Интерпретируем "stars" как сумма в XTR (в минимальных единицах умножаем на 100).
+            amount = int(t["stars"]) * 100
+            prices = [teletypes.LabeledPrice(label=f"{title}", amount=amount)]
+
+            try:
+                # Создаем запись платежа, чтобы отследить позже
+                req_id = create_payment_record(user_id, tariff_key, "stars")
+                payments = load_payments()
+                payments_key = f"payload:{payload}"
+                payments[payments_key] = {"req_id": req_id}
+                save_payments(payments)
+
+                logger.info(f"stars: отправка invoice. req_id={req_id}, payload={payload}, user={user_id}, tariff={tariff_key}")
+                bot.send_invoice(
+                    chat_id=call.message.chat.id,
+                    title=title,
+                    description=description,
+                    invoice_payload=payload,
+                    provider_token=PROVIDER_TOKEN,
+                    currency="XTR",
+                    prices=prices,
+                    start_parameter=f"start-{req_id}"
+                )
+                bot.answer_callback_query(call.id)
+            except Exception as e:
+                logger.error(f"Ошибка создания инвойса: {e}")
+                logger.error(traceback.format_exc())
+                try:
+                    bot.answer_callback_query(call.id, "Ошибка создания инвойса. Попробуйте позже.", show_alert=True)
+                except Exception:
+                    logger.error("Не удалось отправить answer_callback_query после ошибки send_invoice.")
+            return
+
+    except Exception as e:
+        logger.error(f"Исключение в callback_payment_choice: {e}")
+        logger.error(traceback.format_exc())
+        try:
+            bot.answer_callback_query(call.id, "Внутренняя ошибка. Проверьте логи.", show_alert=True)
+        except Exception:
+            logger.error("Не удалось отправить answer_callback_query после исключения в callback_payment_choice.")
 
 
 @bot.pre_checkout_query_handler(func=lambda query: True)
@@ -690,9 +747,11 @@ def precheckout(pre_checkout_query):
     Подтверждаем pre-checkout запрос — всегда разрешаем.
     """
     try:
+        logger.info(f"pre_checkout_query: {getattr(pre_checkout_query, 'from_user', None)}")
         bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
     except Exception as e:
-        logger.exception(e)
+        logger.error(f"Ошибка в precheckout: {e}")
+        logger.error(traceback.format_exc())
 
 
 @bot.message_handler(content_types=['successful_payment'])
@@ -703,6 +762,7 @@ def handle_successful_payment(message: teletypes.Message):
     try:
         sp = message.successful_payment  # SuccessfulPayment
         payload = sp.invoice_payload  # payload, который мы передали
+        logger.info(f"successful_payment: payload={payload} from_user={message.from_user.id}")
         # Ищем нашу запись по payload
         payments = load_payments()
         payments_key = f"payload:{payload}"
@@ -735,6 +795,7 @@ def handle_successful_payment(message: teletypes.Message):
             t = TARIFFS.get(tariff_key)
             amount_replies = t.get("replies") if not t.get("duration_days") else f"безлимит на {t['duration_days']} дней"
             bot.send_message(message.chat.id, f"🎉 Оплата прошла успешно! Вам начислено: {amount_replies}")
+            logger.info(f"successful_payment: начислено user={message.from_user.id} tariff={tariff_key}")
         else:
             # уже обработано
             bot.send_message(message.chat.id, "ℹ️ Эта оплата уже обработана ранее.")
@@ -748,21 +809,31 @@ def handle_successful_payment(message: teletypes.Message):
 
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("kaspi_paid:"))
 def callback_kaspi_paid(call: teletypes.CallbackQuery):
-    req_id = call.data.split(":", 1)[1]
-    payments = load_payments()
-    rec = payments.get(req_id)
-    if not rec:
-        bot.answer_callback_query(call.id, "Заявка не найдена.", show_alert=True)
-        return
-    if rec.get("status") != "pending":
-        bot.answer_callback_query(call.id, "Эта заявка уже обработана.", show_alert=True)
-        return
+    logger.info(f"callback_kaspi_paid: from_user={getattr(call.from_user, 'id', 'unknown')}, data={getattr(call, 'data', 'None')}")
+    try:
+        req_id = call.data.split(":", 1)[1]
+        payments = load_payments()
+        rec = payments.get(req_id)
+        if not rec:
+            bot.answer_callback_query(call.id, "Заявка не найдена.", show_alert=True)
+            return
+        if rec.get("status") != "pending":
+            bot.answer_callback_query(call.id, "Эта заявка уже обработана.", show_alert=True)
+            return
 
-    # Помечаем, что от этого пользователя ожидается фото чека для конкретной заявки
-    user_id = str(call.from_user.id)
-    KASPI_WAITING[user_id] = req_id
-    bot.answer_callback_query(call.id)
-    bot.send_message(call.message.chat.id, "Отправьте одно изображение (скриншот чека). После отправки изображение будет переслано администратору для проверки.")
+        # Помечаем, что от этого пользователя ожидается фото чека для конкретной заявки
+        user_id = str(call.from_user.id)
+        KASPI_WAITING[user_id] = req_id
+        bot.answer_callback_query(call.id)
+        bot.send_message(call.message.chat.id, "Отправьте одно изображение (скриншот чека). После отправки изображение будет переслано администратору для проверки.", parse_mode="HTML")
+        logger.info(f"Kaspi: ожидание чека от user={user_id}, req_id={req_id}")
+    except Exception as e:
+        logger.error(f"Ошибка в callback_kaspi_paid: {e}")
+        logger.error(traceback.format_exc())
+        try:
+            bot.answer_callback_query(call.id, "Ошибка. Проверьте логи.", show_alert=True)
+        except Exception:
+            pass
 
 
 @bot.message_handler(content_types=['photo'])
@@ -806,7 +877,7 @@ def handle_kaspi_receipt_photo(message: teletypes.Message):
         f"Хочет приобрести:\n\n"
         f"{t['title']}\n\n"
         f"Стоимость:\n{t['price_tenge']} ₸\n\n"
-        "Чек выше."
+        "Чек в приложении."
     )
 
     kb = teletypes.InlineKeyboardMarkup()
@@ -818,65 +889,75 @@ def handle_kaspi_receipt_photo(message: teletypes.Message):
     try:
         with open(local_path, "rb") as photo:
             bot.send_photo(int(ADMIN_ID), photo, caption=caption, reply_markup=kb)
+        bot.send_message(message.chat.id, "✅ Чек отправлен на проверку администратору. Ожидайте подтверждения.")
+        logger.info(f"Kaspi: чек отправлен админу для req_id={req_id}")
     except Exception as e:
         logger.exception(e)
         bot.send_message(message.chat.id, "❌ Не удалось отправить чек админу. Попробуйте позже.")
         return
 
-    # Подтвердим пользователю, что чек отправлен
-    bot.send_message(message.chat.id, "✅ Чек отправлен на проверку администратору. Ожидайте подтверждения.")
-
 
 @bot.callback_query_handler(func=lambda call: call.data and (call.data.startswith("admin_confirm:") or call.data.startswith("admin_reject:")))
 def callback_admin_action(call: teletypes.CallbackQuery):
-    if call.from_user.id != int(ADMIN_ID):
-        bot.answer_callback_query(call.id, "У вас нет прав для этого действия.", show_alert=True)
-        return
-
-    data = call.data
-    action, req_id = data.split(":", 1)
-    payments = load_payments()
-    rec = payments.get(req_id)
-    if not rec:
-        bot.answer_callback_query(call.id, "Заявка не найдена.", show_alert=True)
-        return
-
-    if rec.get("status") != "pending":
-        bot.answer_callback_query(call.id, "Заявка уже обработана ранее.", show_alert=True)
-        return
-
-    user_id = rec.get("user_id")
-    tariff_key = rec.get("tariff")
-
-    if action == "admin_confirm":
-        ok = mark_payment_processed(req_id, "confirmed", admin_id=call.from_user.id, notes="confirmed_by_admin")
-        if not ok:
-            bot.answer_callback_query(call.id, "Не удалось пометить заявку как обработанную.", show_alert=True)
+    logger.info(f"callback_admin_action: from_user={getattr(call.from_user, 'id', 'unknown')}, data={getattr(call, 'data', 'None')}")
+    try:
+        if call.from_user.id != int(ADMIN_ID):
+            bot.answer_callback_query(call.id, "У вас нет прав для этого действия.", show_alert=True)
             return
-        try:
-            apply_tariff_to_user(user_id, tariff_key)
+
+        data = call.data
+        action, req_id = data.split(":", 1)
+        payments = load_payments()
+        rec = payments.get(req_id)
+        if not rec:
+            bot.answer_callback_query(call.id, "Заявка не найдена.", show_alert=True)
+            return
+
+        if rec.get("status") != "pending":
+            bot.answer_callback_query(call.id, "Заявка уже обработана ранее.", show_alert=True)
+            return
+
+        user_id = rec.get("user_id")
+        tariff_key = rec.get("tariff")
+
+        if action == "admin_confirm":
+            ok = mark_payment_processed(req_id, "confirmed", admin_id=call.from_user.id, notes="confirmed_by_admin")
+            if not ok:
+                bot.answer_callback_query(call.id, "Не удалось пометить заявку как обработанную.", show_alert=True)
+                return
+            try:
+                apply_tariff_to_user(user_id, tariff_key)
+                # уведомляем пользователя
+                t = TARIFFS.get(tariff_key)
+                amount_replies = t.get("replies") if not t.get("duration_days") else f"безлимит на {t['duration_days']} дней"
+                bot.send_message(int(user_id), f"🎉 Ваша оплата подтверждена! Вам начисдлено: {amount_replies}")
+                bot.answer_callback_query(call.id, "✅ Пользователь уведомлён и начисление выполнено.")
+                logger.info(f"admin_confirm: начислено user={user_id} tariff={tariff_key} by admin={call.from_user.id}")
+            except Exception as e:
+                logger.exception(e)
+                bot.answer_callback_query(call.id, "Ошибка начисления. См. логи.", show_alert=True)
+                return
+
+        elif action == "admin_reject":
+            ok = mark_payment_processed(req_id, "rejected", admin_id=call.from_user.id, notes="rejected_by_admin")
+            if not ok:
+                bot.answer_callback_query(call.id, "Не удалось пометить заявку как обработанную.", show_alert=True)
+                return
             # уведомляем пользователя
-            t = TARIFFS.get(tariff_key)
-            amount_replies = t.get("replies") if not t.get("duration_days") else f"безлимит на {t['duration_days']} дней"
-            bot.send_message(int(user_id), f"🎉 Ваша оплата подтверждена! Вам начислено: {amount_replies}")
-            bot.answer_callback_query(call.id, "✅ Пользователь уведомлён и начисление выполнено.")
-        except Exception as e:
-            logger.exception(e)
-            bot.answer_callback_query(call.id, "Ошибка начисления. См. логи.", show_alert=True)
-            return
-
-    elif action == "admin_reject":
-        ok = mark_payment_processed(req_id, "rejected", admin_id=call.from_user.id, notes="rejected_by_admin")
-        if not ok:
-            bot.answer_callback_query(call.id, "Не удалось пометить заявку как обработанную.", show_alert=True)
-            return
-        # уведомляем пользователя
+            try:
+                bot.send_message(int(user_id), "❌ Оплата не подтверждена. Если произошла ошибка, свяжитесь с поддержкой.")
+                bot.answer_callback_query(call.id, "❌ Заявка отклонена и пользователь уведомлён.")
+                logger.info(f"admin_reject: заявка {req_id} отклонена админом {call.from_user.id}")
+            except Exception as e:
+                logger.exception(e)
+                bot.answer_callback_query(call.id, "Заявка отклонена, но не удалось уведомить пользователя.", show_alert=True)
+    except Exception as e:
+        logger.error(f"Ошибка в callback_admin_action: {e}")
+        logger.error(traceback.format_exc())
         try:
-            bot.send_message(int(user_id), "❌ Оплата не подтверждена. Если произошла ошибка, свяжитесь с поддержкой.")
-            bot.answer_callback_query(call.id, "❌ Заявка отклонена и пользователь уведомлён.")
-        except Exception as e:
-            logger.exception(e)
-            bot.answer_callback_query(call.id, "Заявка отклонена, но не удалось уведомить пользователя.", show_alert=True)
+            bot.answer_callback_query(call.id, "Внутренняя ошибка. См. логи.", show_alert=True)
+        except Exception:
+            pass
 
 
 # =======================================================
