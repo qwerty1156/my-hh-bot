@@ -700,7 +700,7 @@ def callback_payment_choice(call: teletypes.CallbackQuery):
             payload = f"stars|{user_id}|{tariff_key}|{str(uuid.uuid4())}"
             # Цены: currency XTR, amount в "минимальных единицах" (целое).
             # Интерпретируем "stars" как сумма в XTR (в минимальных единицах умножаем на 100).
-            amount = int(t["stars"]) * 100
+            amount = int(t["stars"])
             prices = [teletypes.LabeledPrice(label=f"{title}", amount=amount)]
 
             try:
